@@ -1,0 +1,22 @@
+[project]
+name = "tradebot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ccxt>=4.5.48",
+    "coinbase-advanced-py>=1.8.2",
+    "einops>=0.8.2",
+    "keras>=3.14.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "python-dotenv>=1.2.2",
+    "scikit-learn>=1.8.0",
+    "streamlit>=1.56.0",
+    "structlog>=25.5.0",
+    "tensorflow>=2.21.0",
+    "torch>=2.11.0",
+    "transformers>=5.5.3",
+]
