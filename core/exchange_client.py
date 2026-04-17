@@ -8,7 +8,7 @@ def get_exchange():
             'apiKey': os.getenv('COINBASE_API_KEY'),
             'secret': os.getenv('COINBASE_API_SECRET'),
             'enableRateLimit': True,
-        }).fetch_accounts()
+        })
     elif EXCHANGE == "kraken":
         return ccxt.kraken({
             'apiKey': os.getenv('KRAKEN_API_KEY'),
