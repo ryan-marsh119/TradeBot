@@ -1,9 +1,5 @@
-import sys
-
 def main():
-    print("Hello from tradeBot!")
-    print(sys.version)
-
+    pass
 
 if __name__ == "__main__":
     main()

@@ -14,9 +14,15 @@ dependencies = [
     "pandas>=3.0.2",
     "python-dotenv>=1.2.2",
     "scikit-learn>=1.8.0",
+    "sqlalchemy>=2.0.44",
     "streamlit>=1.56.0",
     "structlog>=25.5.0",
     "tensorflow>=2.21.0",
     "torch>=2.11.0",
     "transformers>=5.5.3",
+    "pytest>=8.4.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
