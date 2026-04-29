@@ -26,6 +26,8 @@ class KronosStrategy(Strategy):
         self.sample_count = sample_count
         self.move_threshold_pct = move_threshold_pct
         self.predict_override = predict_override
+        self.version = "v1"
+        self.last_forecast_summary: dict[str, Any] | None = None
 
     def generate_signal(self, df: pd.DataFrame) -> SignalDict:
         need = self.lookback + self.pred_len + 2
@@ -70,6 +72,13 @@ class KronosStrategy(Strategy):
         pred_last = float(fc.iloc[-1])
         pred_mean = float(fc.mean())
         dispersion = float(fc.std(ddof=1)) if len(fc) > 1 else 0.0
+        self.last_forecast_summary = {
+            "horizon_bars": self.pred_len,
+            "sample_count": self.sample_count,
+            "pred_last": pred_last,
+            "pred_mean": pred_mean,
+            "dispersion": dispersion,
+        }
 
         move_pct = (pred_last - last_close) / last_close if last_close else 0.0
         # Confidence rises with expected move; falls with path dispersion
