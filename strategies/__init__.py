@@ -1,4 +1,8 @@
-"""Trading strategy layer: signals, sizing, and ensemble."""
+"""Public strategy package API for signal generation and sizing helpers.
+
+This module re-exports strategy contracts and common implementations so callers
+can import from ``strategies`` without depending on file-level layout.
+"""
 
 from strategies.base import Strategy
 from strategies.ensemble import WeightedStrategy, run_ensemble

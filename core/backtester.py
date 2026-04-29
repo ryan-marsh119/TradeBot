@@ -27,12 +27,38 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class PendingOrder:
+    """Queued order awaiting delayed execution in event loop.
+
+    Attributes:
+        execute_at_idx (int): Bar index at which execution should be attempted.
+        signal (SignalInput): Canonical signal payload selected for execution.
+        signal_payload (dict[str, Any]): Serializable signal snapshot for logs.
+    """
+
     execute_at_idx: int
     signal: SignalInput
     signal_payload: dict[str, Any]
 
 
 class Backtester:
+    """Coordinate strategy evaluation, broker execution, and ledger persistence.
+
+    Responsibility:
+        Runs chronological event-driven simulations with optional warmup and
+        delayed fills, while capturing rich event telemetry for replay.
+
+    Key Attributes:
+        ledger (TradeLedger): Storage sink for run metadata and events.
+        broker (PaperBroker): State machine handling fill simulation.
+        warmup_bars (int): Bars required before strategy output is tradable.
+        delay_bars (int): Bars to delay order execution after signal selection.
+
+    Interactions:
+        - Pulls signals from any object implementing ``Strategy``.
+        - Routes selected orders through ``PaperBroker``.
+        - Emits canonical events via ``TradeLedger`` and structlog.
+    """
+
     def __init__(
         self,
         *,
@@ -41,6 +67,17 @@ class Backtester:
         warmup_bars: int = 80,
         delay_bars: int = 1,
     ) -> None:
+        """Initialize backtester orchestration dependencies and settings.
+
+        Args:
+            ledger (TradeLedger): Event and run metadata persistence backend.
+            broker (PaperBroker): Paper execution engine instance.
+            warmup_bars (int): Number of bars to skip before trading.
+            delay_bars (int): Number of bars to delay fills.
+
+        Returns:
+            None: Creates runtime state for one backtester instance.
+        """
         self.ledger = ledger
         self.broker = broker
         self.warmup_bars = warmup_bars
@@ -51,6 +88,11 @@ class Backtester:
 
     @staticmethod
     def _configure_structlog() -> None:
+        """Configure JSON structured logging for backtest events.
+
+        Returns:
+            None: Applies global structlog processor pipeline.
+        """
         structlog.configure(
             processors=[
                 add_log_level,
@@ -60,6 +102,11 @@ class Backtester:
         )
 
     def _next_event_id(self) -> str:
+        """Generate the next sequential event ID for current run context.
+
+        Returns:
+            str: Event ID formatted as ``evt-XXXXXXXXXX``.
+        """
         self._event_counter += 1
         return f"evt-{self._event_counter:010d}"
 
@@ -76,6 +123,22 @@ class Backtester:
         latency_ms: int = 0,
         error: str | None = None,
     ) -> None:
+        """Build and persist one canonical ledger event.
+
+        Args:
+            run_id (str): Run identifier.
+            event_type (str): Lifecycle event type.
+            bar_time (datetime): Event timestamp.
+            symbol (str): Symbol context.
+            strategy (str): Strategy/system origin.
+            strategy_version (str): Strategy version label.
+            payload (dict[str, Any]): Event payload body.
+            latency_ms (int): Optional measured latency.
+            error (str | None): Optional error summary.
+
+        Returns:
+            None: Writes event to ledger and emits structlog message.
+        """
         event: LedgerEvent = {
             "run_id": run_id,
             "event_id": self._next_event_id(),
@@ -100,13 +163,41 @@ class Backtester:
 
     @staticmethod
     def _strategy_version(strategy: Strategy) -> str:
+        """Resolve strategy version identifier with safe default.
+
+        Args:
+            strategy (Strategy): Strategy instance.
+
+        Returns:
+            str: Version string, defaulting to ``v1``.
+        """
         return getattr(strategy, "version", "v1")
 
     @staticmethod
     def _config_hash(payload: dict[str, Any]) -> str:
+        """Compute a short deterministic hash for run configuration.
+
+        Args:
+            payload (dict[str, Any]): Serializable run configuration.
+
+        Returns:
+            str: First 16 hex chars of SHA-256 digest.
+        """
         return hashlib.sha256(json.dumps(payload, default=str, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
     def _choose_signal(self, candidates: list[SignalInput]) -> SignalInput | None:
+        """Select one tradable signal from same-bar strategy outputs.
+
+        Args:
+            candidates (list[SignalInput]): Candidate signals from strategies.
+
+        Returns:
+            SignalInput | None: Selected buy/sell signal, or ``None`` on tie/no-op.
+
+        Notes:
+            Opposing buy/sell signals within 0.05 confidence are treated as
+            conflict and suppressed.
+        """
         tradable = [s for s in candidates if s["side"] in {"buy", "sell"}]
         if not tradable:
             return None
@@ -129,6 +220,25 @@ class Backtester:
         run_id: str | None = None,
         random_seed: int = 42,
     ) -> dict[str, Any]:
+        """Execute a full backtest run over historical bars.
+
+        Args:
+            df (pd.DataFrame): Historical OHLCV frame including ``timestamp``.
+            symbol (str): Symbol being simulated.
+            timeframe (str): Timeframe label for run metadata.
+            strategies (list[Strategy]): Strategy instances to evaluate per bar.
+            run_id (str | None): Optional deterministic run identifier.
+            random_seed (int): Seed for deterministic run behavior.
+
+        Returns:
+            dict[str, Any]: Run summary metrics and identifiers.
+
+        Raises:
+            ValueError: If required timestamp column is missing or data is short.
+
+        Notes:
+            Continues across strategy failures by logging ``error`` events.
+        """
         if "timestamp" not in df.columns:
             raise ValueError("DataFrame must contain timestamp column")
         if len(df) <= self.warmup_bars + self.delay_bars + 1:
@@ -320,7 +430,15 @@ class Backtester:
         return summary
 
     def validate_run_outputs(self, run_id: str, *, allow_negative_cash: bool = False) -> dict[str, Any]:
-        """Acceptance checks for event completeness and portfolio invariants."""
+        """Run acceptance checks for event coverage and portfolio invariants.
+
+        Args:
+            run_id (str): Run identifier to validate.
+            allow_negative_cash (bool): Whether negative cash is acceptable.
+
+        Returns:
+            dict[str, Any]: Validation summary with counts, violations, and status.
+        """
         counts = self.ledger.count_events(run_id)
         required = ("signal_received", "equity_snapshot")
         missing = [event_type for event_type in required if counts.get(event_type, 0) == 0]

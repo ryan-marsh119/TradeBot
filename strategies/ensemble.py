@@ -14,6 +14,13 @@ from strategies.utils import clamp_confidence, format_reason, hold_signal
 
 @dataclass
 class WeightedStrategy:
+    """Strategy wrapper with ensemble vote weight.
+
+    Attributes:
+        strategy (Strategy): Strategy instance providing signal outputs.
+        weight (float): Non-negative vote contribution weight.
+    """
+
     strategy: Strategy
     weight: float = 1.0
 
@@ -27,7 +34,18 @@ def _score_for_signal(signal: SignalLiteral) -> float:
 
 
 def run_ensemble(df: pd.DataFrame, members: Iterable[WeightedStrategy]) -> SignalDict:
-    """Average signed vote using confidence * weight; ties become hold."""
+    """Aggregate member strategy outputs into one ensemble signal.
+
+    Args:
+        df (pd.DataFrame): OHLCV frame provided to each member strategy.
+        members (Iterable[WeightedStrategy]): Weighted strategy collection.
+
+    Returns:
+        SignalDict: Ensemble output based on weighted signed confidence score.
+
+    Notes:
+        Score thresholds of ``+/-0.15`` trigger buy/sell; otherwise hold.
+    """
     items = list(members)
     if not items:
         return hold_signal(0.0, "ensemble has no strategies")

@@ -14,7 +14,22 @@ from core.backtest_schema import LedgerEvent
 
 
 class TradeLedger:
-    """Write all events to SQLite + CSV for replayable audits."""
+    """Persist simulation events and run summaries for audit and analytics.
+
+    Responsibility:
+        Provides append-only event storage in both SQLite and CSV so runs are
+        replayable and inspectable with SQL or filesystem tooling.
+
+    Key Attributes:
+        db_path (str): SQLite file used as system-of-record.
+        csv_dir (Path): Directory where per-run CSV event logs are written.
+        _conn (sqlite3.Connection): Shared connection for all DB operations.
+
+    Interactions:
+        - Consumed by ``Backtester`` for run lifecycle and per-bar events.
+        - Queried by validation/test harnesses for acceptance checks.
+        - Produces artifacts suitable for downstream ETL/reporting.
+    """
 
     EVENT_FIELDS = [
         "run_id",
@@ -31,6 +46,15 @@ class TradeLedger:
     ]
 
     def __init__(self, db_path: str = "data/trades.db", csv_dir: str = "data/ledger_csv") -> None:
+        """Initialize storage backends and ensure required schema exists.
+
+        Args:
+            db_path (str): SQLite database file path.
+            csv_dir (str): Directory for per-run CSV event files.
+
+        Returns:
+            None: Configures filesystem and opens SQLite connection.
+        """
         self.db_path = db_path
         self.csv_dir = Path(csv_dir)
         self.csv_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +67,11 @@ class TradeLedger:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
+        """Create ledger tables if they do not already exist.
+
+        Returns:
+            None: Executes idempotent DDL statements.
+        """
         with self._conn:
             self._conn.execute(
                 """
@@ -87,13 +116,38 @@ class TradeLedger:
 
     @staticmethod
     def _serialize_payload(payload: dict[str, Any]) -> str:
+        """Serialize payload dictionaries to compact JSON strings.
+
+        Args:
+            payload (dict[str, Any]): Event or run payload dictionary.
+
+        Returns:
+            str: JSON string with deterministic compact separators.
+        """
         return json.dumps(payload, separators=(",", ":"), default=str)
 
     @staticmethod
     def _iso(ts: datetime) -> str:
+        """Convert datetimes to UTC ISO-8601 strings.
+
+        Args:
+            ts (datetime): Input datetime.
+
+        Returns:
+            str: UTC-normalized ISO timestamp.
+        """
         return ts.astimezone(UTC).replace(tzinfo=UTC).isoformat()
 
     def log_run_start(self, run_id: str, config: dict[str, Any]) -> None:
+        """Insert or update run metadata when execution begins.
+
+        Args:
+            run_id (str): Run identifier.
+            config (dict[str, Any]): Serialized run configuration payload.
+
+        Returns:
+            None: Writes a ``running`` status row in ``backtest_runs``.
+        """
         now = datetime.now(tz=UTC).isoformat()
         with self._conn:
             self._conn.execute(
@@ -132,6 +186,19 @@ class TradeLedger:
         errors: int,
         status: str = "completed",
     ) -> None:
+        """Finalize run summary metrics at completion.
+
+        Args:
+            run_id (str): Run identifier.
+            total_trades (int): Number of filled trade executions.
+            net_pnl (float): Net profit/loss for run.
+            max_drawdown (float): Max drawdown over equity curve.
+            errors (int): Count of captured non-fatal errors.
+            status (str): Final run status label.
+
+        Returns:
+            None: Updates terminal metrics in ``backtest_runs``.
+        """
         with self._conn:
             self._conn.execute(
                 """
@@ -148,6 +215,14 @@ class TradeLedger:
             )
 
     def log_event(self, event: LedgerEvent) -> None:
+        """Write one normalized event record to SQL and CSV outputs.
+
+        Args:
+            event (LedgerEvent): Canonical event payload.
+
+        Returns:
+            None: Persists row in both storage sinks.
+        """
         payload = {
             "run_id": event["run_id"],
             "event_id": event["event_id"],
@@ -165,6 +240,14 @@ class TradeLedger:
         self._write_csv(payload)
 
     def _write_sql(self, row: dict[str, Any]) -> None:
+        """Insert one event row into SQLite with idempotent semantics.
+
+        Args:
+            row (dict[str, Any]): Event row payload in ``EVENT_FIELDS`` order.
+
+        Returns:
+            None: Uses ``INSERT OR IGNORE`` against unique event key.
+        """
         with self._conn:
             self._conn.execute(
                 """
@@ -177,6 +260,14 @@ class TradeLedger:
             )
 
     def _write_csv(self, row: dict[str, Any]) -> None:
+        """Append one event row to per-run CSV.
+
+        Args:
+            row (dict[str, Any]): Event row payload.
+
+        Returns:
+            None: Creates headers on first write for each run file.
+        """
         csv_path = self.csv_dir / f"{row['run_id']}.csv"
         is_new = not csv_path.exists() or os.path.getsize(csv_path) == 0
         with csv_path.open("a", newline="", encoding="utf-8") as fh:
@@ -186,6 +277,14 @@ class TradeLedger:
             writer.writerow({k: row[k] for k in self.EVENT_FIELDS})
 
     def count_events(self, run_id: str) -> dict[str, int]:
+        """Aggregate event counts by type for a run.
+
+        Args:
+            run_id (str): Run identifier.
+
+        Returns:
+            dict[str, int]: Mapping of event type to row count.
+        """
         rows = self._conn.execute(
             """
             SELECT event_type, COUNT(*) AS c
@@ -198,6 +297,15 @@ class TradeLedger:
         return {str(r["event_type"]): int(r["c"]) for r in rows}
 
     def fetch_events(self, run_id: str, event_type: str | None = None) -> list[dict[str, Any]]:
+        """Read ordered events for a run, optionally filtered by type.
+
+        Args:
+            run_id (str): Run identifier.
+            event_type (str | None): Optional event type filter.
+
+        Returns:
+            list[dict[str, Any]]: Ordered event dictionaries from SQLite.
+        """
         if event_type:
             rows = self._conn.execute(
                 """
@@ -223,4 +331,9 @@ class TradeLedger:
         return [dict(row) for row in rows]
 
     def close(self) -> None:
+        """Close the underlying SQLite connection.
+
+        Returns:
+            None: Releases DB resources for this ledger instance.
+        """
         self._conn.close()

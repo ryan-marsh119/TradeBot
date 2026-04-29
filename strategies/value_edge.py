@@ -13,9 +13,21 @@ from strategies.utils import clamp_confidence, format_reason, hold_signal, valid
 
 
 class ValueEdgeStrategy(Strategy):
-    """
-    Estimates short-horizon expected log return from recent closes and compares
-    a crude fair-value level to the last close. Edge magnitude maps to confidence.
+    """Heuristic fair-value strategy based on drift/volatility edge.
+
+    Responsibility:
+        Estimates expected short-horizon move from log-return statistics and
+        emits directional signals when estimated edge exceeds neutral bands.
+
+    Key Attributes:
+        lookback (int): Window for return statistics.
+        horizon_bars (int): Forward horizon for fair-value projection.
+        buy_edge_pct (float): Minimum positive edge for buy signal.
+        sell_edge_pct (float): Maximum negative edge for sell signal.
+
+    Interactions:
+        - Consumed by backtester/ensemble as a generic ``Strategy``.
+        - Uses helpers from ``strategies.utils`` for validation and formatting.
     """
 
     def __init__(
@@ -25,12 +37,31 @@ class ValueEdgeStrategy(Strategy):
         buy_edge_pct: float = 0.004,
         sell_edge_pct: float = -0.004,
     ):
+        """Initialize value-edge strategy parameters.
+
+        Args:
+            lookback (int): Historical bars used for return estimation.
+            horizon_bars (int): Horizon for expected move projection.
+            buy_edge_pct (float): Positive edge threshold for buys.
+            sell_edge_pct (float): Negative edge threshold for sells.
+
+        Returns:
+            None: Stores strategy configuration.
+        """
         self.lookback = lookback
         self.horizon_bars = horizon_bars
         self.buy_edge_pct = buy_edge_pct
         self.sell_edge_pct = sell_edge_pct
 
     def generate_signal(self, df: pd.DataFrame) -> SignalDict:
+        """Generate fair-value edge based trading signal.
+
+        Args:
+            df (pd.DataFrame): OHLCV frame with sufficient lookback.
+
+        Returns:
+            SignalDict: Buy/sell/hold output with confidence and reason.
+        """
         err = validate_ohlcv_df(df, min_rows=self.lookback + 5)
         if err:
             return hold_signal(0.0, err)

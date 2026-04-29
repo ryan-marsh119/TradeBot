@@ -7,13 +7,47 @@ from core.exchange_client import get_exchange
 
 
 class DataFetcher:
+    """Ingest and persist OHLCV market data for downstream trading components.
+
+    Responsibility:
+        Owns historical and incremental market-data synchronization between the
+        exchange adapter and local SQLite storage.
+
+    Key Attributes:
+        exchange: CCXT exchange client returned by ``get_exchange``.
+        db_path: Filesystem path for SQLite persistence.
+        engine: SQLAlchemy engine used for reads/writes.
+
+    Interactions:
+        - Called by runners or schedulers to keep candles current.
+        - Supplies data consumed by strategies and backtesting flows.
+        - Shares schema with other modules reading ``market_data``.
+    """
+
     def __init__(self, db_path="data/trades.db"):
+        """Initialize exchange client and local market-data storage.
+
+        Args:
+            db_path (str): SQLite file path used for candle persistence.
+
+        Returns:
+            None: Initializes internal state in-place.
+        """
         self.exchange = get_exchange()
         self.db_path = db_path
         self.engine = create_engine(f"sqlite:///{self.db_path}", future=True)
         self._ensure_db_exists()
 
     def _ensure_db_exists(self):
+        """Create and migrate market data table if needed.
+
+        Returns:
+            None: Applies schema and lightweight timestamp repair migration.
+
+        Notes:
+            Includes a repair query for legacy rows where timestamps were stored
+            with incorrect units.
+        """
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         with self.engine.begin() as conn:
             conn.execute(
@@ -44,6 +78,14 @@ class DataFetcher:
             )
 
     def _get_last_timestamp(self, symbol: str):
+        """Return the latest persisted candle timestamp for a symbol.
+
+        Args:
+            symbol (str): Exchange symbol, slash or dash separated.
+
+        Returns:
+            int | None: Millisecond epoch timestamp, or ``None`` if no rows.
+        """
         normalized_symbol = symbol.replace("-", "/")
         with self.engine.connect() as conn:
             result = conn.execute(
@@ -53,7 +95,19 @@ class DataFetcher:
         return int(result) if result is not None else None
 
     def fetch_ohlcv(self, symbol: str, timeframe: str = None, limit: int = 500):
-        """Fetch OHLCV data from exchange incrementally from last stored timestamp."""
+        """Fetch candles incrementally from exchange.
+
+        Args:
+            symbol (str): Symbol to fetch from the exchange.
+            timeframe (str | None): Candle timeframe (defaults to project config).
+            limit (int): Batch size per exchange request.
+
+        Returns:
+            pd.DataFrame: Normalized OHLCV frame with ``timestamp`` as datetime.
+
+        Notes:
+            If prior rows exist, only unseen candles are returned.
+        """
         if timeframe is None:
             timeframe = DEFAULT_TIMEFRAME
 
@@ -96,7 +150,14 @@ class DataFetcher:
         return df
 
     def save_to_db(self, df: pd.DataFrame):
-        """Save OHLCV data to database"""
+        """Insert OHLCV candles into SQLite with de-duplication.
+
+        Args:
+            df (pd.DataFrame): Input candles matching expected OHLCV schema.
+
+        Returns:
+            int: Number of newly inserted rows.
+        """
         if df.empty:
             return 0
 
@@ -126,7 +187,15 @@ class DataFetcher:
         return result.rowcount or 0
 
     def backfill_symbol(self, symbol: str, days: int = None):
-        """Download historical data for one symbol"""
+        """Backfill one symbol for a trailing day window.
+
+        Args:
+            symbol (str): Symbol to backfill.
+            days (int | None): Number of trailing days; falls back to config.
+
+        Returns:
+            None: Prints progress and writes rows when available.
+        """
         if days is None:
             days = BACKFILL_DAYS
 
@@ -145,12 +214,24 @@ class DataFetcher:
             print(f"No data recieved for {symbol}")
 
     def backfill_all(self):
-        """Backfill all target symbols"""
+        """Run backfill for all configured target symbols.
+
+        Returns:
+            None: Iterates configured symbols and delegates to ``backfill_symbol``.
+        """
         for symbol in TARGET_SYMBOLS:
             self.backfill_symbol(symbol)
 
     def get_latest_data(self, symbol: str, limit: int = 500):
-        """Get most recent data for a symbol"""
+        """Read latest candles for a symbol from local storage.
+
+        Args:
+            symbol (str): Symbol to query.
+            limit (int): Maximum rows to return.
+
+        Returns:
+            pd.DataFrame: Descending timestamp-ordered rows from SQLite.
+        """
         normalized_symbol = symbol.replace("-", "/")
         query = text(
             """

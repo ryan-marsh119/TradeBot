@@ -13,6 +13,26 @@ from strategies.utils import clamp_confidence, format_reason, hold_signal, valid
 
 
 class KronosStrategy(Strategy):
+    """Forecast-driven strategy powered by optional Kronos model inference.
+
+    Responsibility:
+        Converts model-predicted close path into directional trading signals with
+        confidence scaling based on expected move and forecast dispersion.
+
+    Key Attributes:
+        lookback (int): Input history bars passed to predictor.
+        pred_len (int): Forecast horizon in bars.
+        sample_count (int): Number of stochastic model samples.
+        move_threshold_pct (float): Minimum move magnitude to trade.
+        last_forecast_summary (dict[str, Any] | None): Latest condensed model
+            output metadata for logging/debugging.
+
+    Interactions:
+        - Uses ``strategies.kronos_model`` for model loading and frame shaping.
+        - Produces standard ``SignalDict`` consumed by backtester/ensemble.
+        - Exposes forecast metadata that backtester logs into ledger events.
+    """
+
     def __init__(
         self,
         lookback: int = 96,
@@ -21,6 +41,19 @@ class KronosStrategy(Strategy):
         move_threshold_pct: float = 0.0025,
         predict_override: Optional[Callable[..., pd.DataFrame]] = None,
     ):
+        """Initialize Kronos strategy parameters.
+
+        Args:
+            lookback (int): Number of bars used as model context.
+            pred_len (int): Number of bars to forecast.
+            sample_count (int): Number of stochastic paths to sample.
+            move_threshold_pct (float): Absolute move threshold to emit buy/sell.
+            predict_override (Optional[Callable[..., pd.DataFrame]]): Optional
+                injected predictor function for tests.
+
+        Returns:
+            None: Initializes immutable strategy settings.
+        """
         self.lookback = lookback
         self.pred_len = pred_len
         self.sample_count = sample_count
@@ -30,6 +63,17 @@ class KronosStrategy(Strategy):
         self.last_forecast_summary: dict[str, Any] | None = None
 
     def generate_signal(self, df: pd.DataFrame) -> SignalDict:
+        """Generate signal from Kronos forecasted close trajectory.
+
+        Args:
+            df (pd.DataFrame): OHLCV input frame including recent bars.
+
+        Returns:
+            SignalDict: Buy/sell/hold signal with confidence and reason.
+
+        Notes:
+            Returns hold when model is unavailable or prediction fails.
+        """
         need = self.lookback + self.pred_len + 2
         err = validate_ohlcv_df(df, min_rows=need)
         if err:

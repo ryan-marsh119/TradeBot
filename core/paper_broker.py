@@ -12,12 +12,35 @@ from core.backtest_schema import ExecutionResult, SignalInput
 
 @dataclass
 class PositionState:
+    """Per-symbol position snapshot tracked by paper broker.
+
+    Attributes:
+        qty (float): Current open quantity.
+        avg_entry (float): Weighted average entry price.
+    """
+
     qty: float = 0.0
     avg_entry: float = 0.0
 
 
 class PaperBroker:
-    """Simulate spot fills with fees, delay, and slippage."""
+    """Simulate exchange execution using deterministic paper-trading rules.
+
+    Responsibility:
+        Converts strategy signals into fills/rejections while maintaining cash,
+        positions, fee accrual, and portfolio PnL state.
+
+    Key Attributes:
+        cash (float): Current free cash balance.
+        positions (dict[str, PositionState]): Position state by symbol.
+        realized_pnl (float): Cumulative realized PnL across closed quantity.
+        total_fees (float): Cumulative simulated fees.
+
+    Interactions:
+        - Called by ``Backtester`` for each due order.
+        - Returns canonical ``ExecutionResult`` payloads for ledger logging.
+        - Consumes strategy metadata (e.g., maker/taker hint) for fee model.
+    """
 
     def __init__(
         self,
@@ -31,6 +54,21 @@ class PaperBroker:
         allow_negative_cash: bool = False,
         supported_symbols: set[str] | None = None,
     ) -> None:
+        """Initialize broker balances and execution model parameters.
+
+        Args:
+            initial_cash (float): Starting cash balance.
+            fee_bps_taker (float): Taker fee in basis points.
+            fee_bps_maker (float): Maker fee in basis points.
+            slippage_bps_fixed (float): Fixed slippage component in bps.
+            slippage_vol_multiplier (float): Multiplier for volatility slippage.
+            min_qty (float): Minimum tradable quantity threshold.
+            allow_negative_cash (bool): Allow margin-like negative cash behavior.
+            supported_symbols (set[str] | None): Optional symbol allow-list.
+
+        Returns:
+            None: Initializes mutable portfolio state.
+        """
         self.initial_cash = float(initial_cash)
         self.cash = float(initial_cash)
         self.fee_bps_taker = float(fee_bps_taker)
@@ -45,23 +83,57 @@ class PaperBroker:
         self.total_fees = 0.0
 
     def _position(self, symbol: str) -> PositionState:
+        """Return mutable position state for one symbol.
+
+        Args:
+            symbol (str): Symbol key.
+
+        Returns:
+            PositionState: Existing or newly initialized state object.
+        """
         if symbol not in self.positions:
             self.positions[symbol] = PositionState()
         return self.positions[symbol]
 
     @staticmethod
     def _volatility_bps(bar: dict[str, Any]) -> float:
+        """Estimate bar volatility as basis points from high/low range.
+
+        Args:
+            bar (dict[str, Any]): OHLC-like bar dictionary.
+
+        Returns:
+            float: Non-negative volatility estimate in basis points.
+        """
         high = float(bar.get("high", 0.0))
         low = float(bar.get("low", 0.0))
         close = max(float(bar.get("close", 0.0)), 1e-12)
         return max((high - low) / close * 10_000.0, 0.0)
 
     def _slippage_bps(self, bar: dict[str, Any], confidence: float) -> float:
+        """Compute total slippage using fixed and volatility-linked terms.
+
+        Args:
+            bar (dict[str, Any]): Current bar used for volatility estimate.
+            confidence (float): Signal confidence used for aggressiveness scale.
+
+        Returns:
+            float: Slippage value in basis points.
+        """
         vol_bps = self._volatility_bps(bar)
         conf_scale = 1.0 + max(min(float(confidence), 1.0), 0.0) * 0.5
         return self.slippage_bps_fixed + (vol_bps * self.slippage_vol_multiplier / 100.0) * conf_scale
 
     def _mark_to_market(self, symbol: str, mark_price: float) -> tuple[float, float]:
+        """Compute unrealized PnL and equity for one symbol mark.
+
+        Args:
+            symbol (str): Symbol to mark.
+            mark_price (float): Price used for valuation.
+
+        Returns:
+            tuple[float, float]: ``(unrealized_pnl, total_equity)``.
+        """
         pos = self._position(symbol)
         unrealized = (mark_price - pos.avg_entry) * pos.qty if pos.qty > 0 else 0.0
         equity = self.cash + (pos.qty * mark_price)
@@ -74,7 +146,20 @@ class PaperBroker:
         current_bar: dict[str, Any],
         next_bar: dict[str, Any],
     ) -> ExecutionResult:
-        """Execute a single signal using next-bar open fill model."""
+        """Execute one strategy signal using next-bar-open fill assumptions.
+
+        Args:
+            signal (SignalInput): Canonical signal payload from strategy layer.
+            current_bar (dict[str, Any]): Current bar context.
+            next_bar (dict[str, Any]): Next bar used for fill benchmark.
+
+        Returns:
+            ExecutionResult: Structured outcome (filled, rejected, or ignored).
+
+        Notes:
+            Side effects include mutating broker cash, positions, fees, and
+            realized PnL when fills occur.
+        """
         symbol = signal["symbol"]
         side = signal["side"]
         conf = float(signal["confidence"])

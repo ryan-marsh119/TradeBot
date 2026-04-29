@@ -52,7 +52,18 @@ def _try_build_predictor() -> tuple[Any | None, str | None]:
 
 
 def get_predictor(force_reload: bool = False) -> Any | None:
-    """Return a shared KronosPredictor instance, or None if not available."""
+    """Return shared Kronos predictor instance when available.
+
+    Args:
+        force_reload (bool): Rebuild singleton predictor if ``True``.
+
+    Returns:
+        Any | None: Predictor object, or ``None`` when unavailable.
+
+    Notes:
+        Load failures are cached in module state and surfaced via
+        ``get_load_error``.
+    """
     global _predictor_singleton, _load_error
     if force_reload:
         _predictor_singleton = None
@@ -72,11 +83,23 @@ def get_predictor(force_reload: bool = False) -> Any | None:
 
 
 def get_load_error() -> str | None:
+    """Return the cached Kronos load failure message.
+
+    Returns:
+        str | None: Last load error, or ``None`` when no error is recorded.
+    """
     return _load_error
 
 
 def set_predictor_for_tests(predictor: Any | None) -> None:
-    """Override singleton (used by unit tests)."""
+    """Inject predictor singleton for deterministic tests.
+
+    Args:
+        predictor (Any | None): Test predictor or ``None`` to clear.
+
+    Returns:
+        None: Mutates module-level singleton state.
+    """
     global _predictor_singleton, _load_error
     _predictor_singleton = predictor
     _load_error = None
@@ -88,10 +111,22 @@ def ohlcv_to_kronos_frames(
     pred_len: int,
     use_volume: bool = False,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-    """
-    Build (x_df, x_timestamp, y_timestamp) for KronosPredictor.predict.
+    """Build Kronos predictor inputs from OHLCV history.
 
-    Expects optional `timestamp` column; otherwise uses a synthetic RangeIndex-based timeline.
+    Args:
+        df (pd.DataFrame): Source OHLCV frame.
+        lookback (int): Input context bars for the model.
+        pred_len (int): Forecast horizon in bars.
+        use_volume (bool): Include volume feature when present.
+
+    Returns:
+        tuple[pd.DataFrame, pd.Series, pd.Series]: ``(x_df, x_timestamp, y_timestamp)``.
+
+    Raises:
+        ValueError: If the input frame is shorter than ``lookback + pred_len``.
+
+    Notes:
+        Uses a synthetic hourly timeline when ``timestamp`` is missing.
     """
     if len(df) < lookback + pred_len:
         raise ValueError(f"Need at least {lookback + pred_len} rows, got {len(df)}")
@@ -129,10 +164,24 @@ def predict_future_closes(
     use_volume: bool = False,
     predict_fn: Optional[Callable[..., pd.DataFrame]] = None,
 ) -> tuple[list[float], str | None]:
-    """
-    Return list of predicted closes (one per sample path if model aggregates — we take last bar mean).
+    """Run Kronos prediction and return forecasted close values.
 
-    Uses `predict_fn` when injected (tests); otherwise uses real predictor if loaded.
+    Args:
+        df (pd.DataFrame): OHLCV input frame.
+        lookback (int): Input context bars.
+        pred_len (int): Forecast horizon bars.
+        sample_count (int): Number of stochastic samples.
+        temperature (float): Sampling temperature.
+        top_p (float): Nucleus sampling parameter.
+        use_volume (bool): Include volume channel when enabled.
+        predict_fn (Callable[..., pd.DataFrame] | None): Optional injected
+            predictor for tests.
+
+    Returns:
+        tuple[list[float], str | None]: ``(predicted_closes, error_message)``.
+
+    Notes:
+        Current implementation returns only the horizon-end close value.
     """
     predictor = predict_fn or get_predictor()
     if predictor is None:
@@ -163,11 +212,24 @@ def predict_future_closes(
 
 @dataclass
 class MockKronosPredictor:
-    """Deterministic stand-in for unit tests."""
+    """Deterministic stand-in predictor for tests without model weights.
+
+    Attributes:
+        bias (float): Fractional uplift applied to final observed close.
+    """
 
     bias: float = 0.01
 
     def predict(self, **kwargs: Any) -> pd.DataFrame:
+        """Generate deterministic synthetic forecast output.
+
+        Args:
+            **kwargs (Any): Predictor-style kwargs containing ``df`` and optional
+                ``pred_len``.
+
+        Returns:
+            pd.DataFrame: DataFrame with ``close`` column for each forecast step.
+        """
         df: pd.DataFrame = kwargs["df"]
         pred_len: int = int(kwargs.get("pred_len", 5))
         last = float(df["close"].iloc[-1])

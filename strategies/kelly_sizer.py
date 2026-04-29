@@ -22,10 +22,20 @@ def kelly_fraction(
     min_fraction: float = 0.0,
     half_kelly: bool = True,
 ) -> float:
-    """
-    Classic binary-outcome Kelly: f* = (p(b+1) - 1) / b with b = win/loss size ratio.
+    """Estimate position fraction using Kelly criterion variant.
 
-    Here `win_loss_ratio` is payoff per unit risk (reward/risk), e.g. 1.5 means +1.5 on win, -1 on loss.
+    Args:
+        win_prob (float): Estimated probability of winning outcome in ``[0, 1]``.
+        win_loss_ratio (float): Expected reward-to-risk ratio ``b``.
+        max_fraction (float): Upper cap on returned fraction.
+        min_fraction (float): Lower bound on returned fraction.
+        half_kelly (bool): If ``True``, apply half-Kelly scaling.
+
+    Returns:
+        float: Bounded Kelly-based allocation fraction.
+
+    Notes:
+        Invalid probabilities/ratios return ``min_fraction``.
     """
     if not (0.0 <= win_prob <= 1.0) or math.isnan(win_prob):
         return min_fraction
@@ -50,7 +60,17 @@ def size_from_confidence(
     max_fraction: float = 0.2,
     min_fraction: float = 0.0,
 ) -> float:
-    """Map strategy confidence [0,1] to a suggested position fraction (direction-agnostic magnitude)."""
+    """Map strategy confidence to bounded position size fraction.
+
+    Args:
+        confidence (float): Strategy confidence score.
+        signal (Literal["buy", "sell", "hold"]): Signal direction.
+        max_fraction (float): Maximum allocation fraction.
+        min_fraction (float): Minimum allocation fraction.
+
+    Returns:
+        float: Suggested absolute position fraction.
+    """
     if signal == "hold":
         return min_fraction
     c = clamp_confidence(confidence)
@@ -65,7 +85,18 @@ def combined_size(
     signal: Literal["buy", "sell", "hold"] = "buy",
     max_fraction: float = 0.2,
 ) -> float:
-    """Blend Kelly (from prob/odds) with confidence cap."""
+    """Blend Kelly sizing with confidence scaling.
+
+    Args:
+        win_prob (float): Estimated win probability.
+        win_loss_ratio (float): Reward-to-risk ratio.
+        confidence (float): Strategy confidence.
+        signal (Literal["buy", "sell", "hold"]): Trade direction.
+        max_fraction (float): Upper cap on size fraction.
+
+    Returns:
+        float: Combined capped fraction suitable for sizing.
+    """
     if signal == "hold":
         return 0.0
     k = kelly_fraction(win_prob, win_loss_ratio, max_fraction=max_fraction, half_kelly=True)

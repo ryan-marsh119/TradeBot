@@ -42,17 +42,47 @@ def _weighted_streak_component(streak_len: int) -> float:
 
 
 class MomentumStrategy(Strategy):
-    """Combines 7/14/30-day streak structure with RSI/MACD confidence tweaks."""
+    """Momentum strategy combining return streaks and indicator filters.
+
+    Responsibility:
+        Detect directional persistence from daily return streak structure and
+        modulate confidence using RSI and MACD context.
+
+    Key Attributes:
+        buy_threshold (float): Minimum combined momentum score for buys.
+        sell_threshold (float): Maximum combined momentum score for sells.
+
+    Interactions:
+        - Uses indicator helpers from ``strategies.indicators``.
+        - Returns ``SignalDict`` consumed by backtester and ensemble layers.
+    """
 
     def __init__(
         self,
         buy_threshold: float = 0.18,
         sell_threshold: float = -0.18,
     ):
+        """Initialize momentum signal thresholds.
+
+        Args:
+            buy_threshold (float): Buy trigger threshold for momentum score.
+            sell_threshold (float): Sell trigger threshold for momentum score.
+
+        Returns:
+            None: Stores strategy parameters.
+        """
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
 
     def generate_signal(self, df: pd.DataFrame) -> SignalDict:
+        """Generate signal from streak momentum plus RSI/MACD adjustments.
+
+        Args:
+            df (pd.DataFrame): OHLCV frame with at least medium-term history.
+
+        Returns:
+            SignalDict: Buy/sell/hold decision with confidence and reason.
+        """
         err = validate_ohlcv_df(df, min_rows=64)
         if err:
             return hold_signal(0.0, err)
